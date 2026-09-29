@@ -89,7 +89,7 @@ The frontend is a React application using PatternFly v6 components, bundled via 
 
 ### Routing
 
-Uses React Router v5 (`useHistory`, `useLocation`) provided by the OpenShift console SDK. Route params are extracted from `window.location.pathname` via `useLocation` rather than `useParams`, as the console SDK routing does not reliably trigger re-renders with `useParams`.
+Routing is router-agnostic: the console shares `react-router-dom` at runtime, and console versions providing react-router v6+ (no `useHistory`) break hook imports. HelpPage therefore reads the active topic from `window.location.pathname` and navigates via local component state + `history.pushState`, with a `popstate` listener for browser back/forward. Route params are never taken from `useParams`, as the console SDK routing does not reliably trigger re-renders with it.
 
 ## Backend Architecture
 

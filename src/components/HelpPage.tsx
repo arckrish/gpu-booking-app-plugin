@@ -9,28 +9,39 @@ import {
   NavList,
   Alert,
 } from '@patternfly/react-core';
-import { useHistory, useLocation } from 'react-router-dom';
+import { topics, sections, getTopicBySlug } from '../docs/topicRegistry';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
-import { topics, sections, getTopicBySlug } from '../docs/topicRegistry';
 import imageMap from '../docs/imageMap';
 import './HelpPage.css';
 
 const HELP_BASE = '/gpu-booking/help';
 const DEFAULT_TOPIC = 'getting-started';
 
+// Read the active topic from the browser URL. Router-agnostic on purpose:
+// the console shares react-router-dom at runtime and versions without
+// useHistory (react-router v6+) break hook imports.
+function readTopicSlug(): string {
+  const match = window.location.pathname.match(/\/gpu-booking\/help\/(.+)/);
+  return match ? match[1] : DEFAULT_TOPIC;
+}
+
 const HelpPage: React.FC = () => {
-  const history = useHistory();
-  const location = useLocation();
-  const topicSlug = React.useMemo(() => {
-    const match = location.pathname.match(/\/gpu-booking\/help\/(.+)/);
-    return match ? match[1] : DEFAULT_TOPIC;
-  }, [location.pathname]);
+  const [topicSlug, setTopicSlug] = React.useState<string>(readTopicSlug);
+
+  // Track browser back/forward while the page stays mounted
+  React.useEffect(() => {
+    const onPopState = () => setTopicSlug(readTopicSlug());
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
   const activeTopic = getTopicBySlug(topicSlug) || getTopicBySlug(DEFAULT_TOPIC);
 
   const navigateToTopic = (slug: string) => {
-    history.push(`${HELP_BASE}/${slug}`);
+    setTopicSlug(slug);
+    window.history.pushState(null, '', `${HELP_BASE}/${slug}`);
   };
 
   // Find prev/next topics for pagination
