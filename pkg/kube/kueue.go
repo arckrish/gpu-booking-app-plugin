@@ -87,6 +87,49 @@ func InitK8sClient() {
 	slog.Info("k8s client: no cluster access available")
 }
 
+// K8sAvailable reports whether a Kubernetes API client is configured.
+// Callers use this to skip live API checks (e.g. namespace verification)
+// when running outside a cluster.
+func K8sAvailable() bool {
+	return k8sHost != "" && k8sToken != ""
+}
+
+// K8sResourceExists reports whether a resource at the given API path exists.
+// Returns (false, nil) for 404 and (false, err) for other failures.
+func K8sResourceExists(path string) (bool, error) {
+	if !K8sAvailable() {
+		return false, fmt.Errorf("k8s client not available")
+	}
+	req, err := http.NewRequest("GET", k8sHost+path, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+k8sToken)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := k8sHTTPClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("k8s API request %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	io.ReadAll(resp.Body)
+
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		return true, nil
+	case resp.StatusCode == http.StatusNotFound:
+		return false, nil
+	default:
+		return false, fmt.Errorf("k8s API %s returned %d", path, resp.StatusCode)
+	}
+}
+
+// NamespaceExists checks whether a namespace exists in the cluster.
+// Returns an error if the API client is not configured or the request fails.
+func NamespaceExists(ns string) (bool, error) {
+	return K8sResourceExists("/api/v1/namespaces/" + ns)
+}
+
 func initK8sInCluster() bool {
 	host := os.Getenv("KUBERNETES_SERVICE_HOST")
 	port := os.Getenv("KUBERNETES_SERVICE_PORT")

@@ -140,11 +140,12 @@ const BookingPage: React.FC = () => {
     startHour: number,
     endHour: number,
     utcOffset: number,
+    targetNamespace?: string,
   ) => {
     if (editBooking) {
       await cancelBooking(editBooking.id);
     }
-    await createBulkBooking({ resources, startDate, endDate, description, startHour, endHour, utcOffset });
+    await createBulkBooking({ resources, startDate, endDate, description, startHour, endHour, utcOffset, targetNamespace });
     setShowBookingModal(false);
     setEditBooking(null);
     await fetchBookings();

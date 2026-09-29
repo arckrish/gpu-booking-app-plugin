@@ -127,6 +127,10 @@ See [GPU Resources](gpu-resources) for a detailed breakdown of the available MIG
 
 The app auto-discovers GPU resources from the cluster every 5 minutes. If the cluster's GPU hardware or MIG configuration changes (e.g., switching from H100 to L40S, or enabling/disabling MIG), the resource cards will update automatically. An administrator can also trigger immediate re-discovery from the admin dashboard using the **Discover GPUs** button.
 
+### What is a system booking? Why is there a namespace instead of a username?
+
+Administrators can create **system bookings** -- reservations for a namespace that has no logged-in user, such as shared model-serving capacity (e.g. the `shared-maas` namespace hosting MaaS models). The booking shows the namespace name with a blue **system** badge instead of a username. System bookings reserve capacity for workloads in that namespace and follow the same conflict, preemption, and expiry rules as user reservations. See [Making Bookings](making-bookings) for details.
+
 ---
 
 ## Next Steps

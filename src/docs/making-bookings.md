@@ -44,6 +44,37 @@ Click the **Book** button to create all bookings at once. The system auto-finds 
 
 ---
 
+## System Bookings (Admins)
+
+Administrators can create **system bookings** -- reservations for a namespace that has no logged-in user, such as shared model-serving capacity. For example, reserving GPUs for the `shared-maas` namespace that hosts MaaS models.
+
+### Creating a system booking
+
+1. Open the booking dialog (right-click a date and select **Book GPU**)
+2. In the **Book as** section, select **System namespace**
+3. Enter the target namespace (e.g. `shared-maas`)
+4. Choose the date range, hours, and resources as usual
+5. Click **Book**
+
+<div class="alert alert-info">
+  <strong>Tip</strong>
+  <p>The <strong>Book as</strong> section is only visible to administrators. The namespace is validated against the cluster before the booking is created -- a typo returns a <code>namespace_not_found</code> error.</p>
+</div>
+
+### How system bookings appear
+
+- The booking shows the **namespace name** in place of a username, with a blue **system** badge
+- System bookings block user reservations exactly like any other reserved booking -- attempting to reserve a system-held slot returns a conflict
+- Like user reservations, system bookings automatically evict consumed (Kueue) bookings when created
+- System bookings are not shown under **My Bookings** for the admin who created them
+- Cancelling a system booking is done by an administrator via the [Admin Dashboard](admin)
+
+### Quota and expiry
+
+System bookings behave identically to user reservations for cluster capacity: when active, a ClusterQueue scoped to the target namespace is created and the shared Cohort quota is reduced. Workloads in that namespace can use the reserved quota. When the booking expires, the reservation is drained and removed like any other.
+
+---
+
 ## Editing a Booking
 
 To modify an existing reservation:
@@ -154,6 +185,9 @@ If a booking operation fails, an error banner appears at the top of the page. Co
 | `slot_taken` | Another user reserved this slot while you were viewing the page. Refresh and try a different slot. |
 | `no_slots_available` | Not enough free units for the requested resource/date/hour combination. Reduce the count or try different dates. |
 | `consumed_booking` | You tried to cancel a Kueue auto-booking. Use the Override button instead, or contact an admin. |
+| `admin_required` | You tried to create a system booking without admin permissions. |
+| `invalid_namespace` | The system booking namespace is not a valid Kubernetes namespace name (lowercase letters, numbers, and dashes, max 63 characters). |
+| `namespace_not_found` | The system booking namespace does not exist in the cluster. Check the spelling and try again. |
 | Network error | The server may be temporarily unavailable. Try refreshing the page. |
 
 ---

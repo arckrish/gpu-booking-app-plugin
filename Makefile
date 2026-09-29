@@ -23,8 +23,9 @@ coverage-frontend:
 # Image URL to use all building/pushing image targets
 REGISTRY ?= quay.io
 REPOSITORY ?= $(REGISTRY)/eformat/gpu-booking-plugin
+TAG ?= latest
 
-IMG := $(REPOSITORY):latest
+IMG := $(REPOSITORY):$(TAG)
 PODMAN_ARGS ?=
 
 # clean compile

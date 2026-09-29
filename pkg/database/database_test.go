@@ -103,9 +103,9 @@ func TestInsertAndQueryBooking(t *testing.T) {
 	defer Close()
 
 	_, err := DB().Exec(
-		"INSERT INTO bookings ("+BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"INSERT INTO bookings ("+BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
 		"booking-1", "alice", "alice@test.com", "nvidia.com/gpu", 0,
-		"2025-04-24", "full", "2025-04-24T00:00:00Z", "reserved", "test booking", 0, 24, 0,
+		"2025-04-24", "full", "2025-04-24T00:00:00Z", "reserved", "test booking", 0, 24, 0, BookingTypeUser,
 	)
 	if err != nil {
 		t.Fatalf("Insert: %v", err)
@@ -145,8 +145,8 @@ func TestUniqueConstraint(t *testing.T) {
 	}
 	defer Close()
 
-	insert := "INSERT INTO bookings (" + BookingColumns + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
-	args := []any{"booking-1", "alice", "", "nvidia.com/gpu", 0, "2025-04-24", "full", "now", "reserved", "", 0, 24, 0}
+	insert := "INSERT INTO bookings (" + BookingColumns + ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+	args := []any{"booking-1", "alice", "", "nvidia.com/gpu", 0, "2025-04-24", "full", "now", "reserved", "", 0, 24, 0, BookingTypeUser}
 
 	if _, err := DB().Exec(insert, args...); err != nil {
 		t.Fatalf("first insert: %v", err)

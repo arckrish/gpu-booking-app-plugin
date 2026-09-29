@@ -12,8 +12,17 @@ import {
   buildGpuEquivalentMap,
   totalGpuEquivalents,
   getResourceColor,
+  isSystemBooking,
   FALLBACK_GPU_RESOURCES,
 } from './constants';
+
+describe('isSystemBooking', () => {
+  it('returns true only for system bookings', () => {
+    expect(isSystemBooking({ id: 'b1', bookingType: 'system' } as never)).toBe(true);
+    expect(isSystemBooking({ id: 'b2', bookingType: 'user' } as never)).toBe(false);
+    expect(isSystemBooking({ id: 'b3' } as never)).toBe(false);
+  });
+});
 
 describe('formatDate', () => {
   it('formats date as YYYY-MM-DD', () => {

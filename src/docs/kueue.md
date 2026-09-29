@@ -86,6 +86,16 @@ Each sync cycle:
 - Administrators can delete any booking, including consumed ones
 - If an admin deletes a consumed booking, it will be recreated on the next sync cycle if the workload is still active
 
+### System reservations
+
+When an administrator creates a [system booking](making-bookings) for a namespace (e.g. `shared-maas`), the reservation is materialized in that existing namespace rather than a `user-` namespace:
+
+- **ClusterQueue** `system-<namespace>` scoped to the target namespace via its namespaceSelector
+- **LocalQueue** `reserved` created inside the target namespace
+- **HardwareProfile(s)** `reserved-<resource>` created inside the target namespace, so workloads in that namespace can select the reserved quota
+
+User reservations follow the `user-<username>` namespace model. Both types expire and drain through the same `until` label mechanism.
+
 ---
 
 ## Preempted Workloads

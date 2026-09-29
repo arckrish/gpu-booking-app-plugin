@@ -15,6 +15,17 @@ func IsValidBookingID(id string) bool {
 	return len(id) <= 256 && validBookingID.MatchString(id)
 }
 
+// validK8sName matches RFC 1123 DNS labels: lowercase alphanumeric characters
+// or '-', max 63 chars, must start and end with an alphanumeric character.
+// This is the format required for Kubernetes namespace names.
+var validK8sName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
+
+// IsValidK8sName checks that a name is a valid Kubernetes DNS label,
+// suitable for use as a namespace name.
+func IsValidK8sName(name string) bool {
+	return validK8sName.MatchString(name)
+}
+
 // IsValidBookingDate checks that a date string is valid and within the booking window.
 // The utcOffset (hours from UTC) is used to compute the user's local "today".
 func IsValidBookingDate(dateStr string, windowDays int, utcOffset float64) bool {

@@ -1,7 +1,7 @@
 import * as React from 'react';
-import { Button } from '@patternfly/react-core';
+import { Button, Label } from '@patternfly/react-core';
 import { Td } from '@patternfly/react-table';
-import { Booking, SLOT_TYPE, formatHour } from '../utils/constants';
+import { Booking, SLOT_TYPE, formatHour, isSystemBooking } from '../utils/constants';
 
 interface BookingCellProps {
   booking: Booking | undefined;
@@ -134,6 +134,11 @@ const BookingCell: React.FC<BookingCellProps> = ({
       <div title={booking.description || undefined}>
         <div style={{ fontSize: '13px', fontWeight: 500 }}>
           {booking.user}
+          {isSystemBooking(booking) && (
+            <Label color="blue" isCompact style={{ marginLeft: '4px', fontSize: '9px' }}>
+              system
+            </Label>
+          )}
         </div>
         {booking.description && (
           <div style={{ fontSize: '10px', color: 'var(--pf-t--global--text--color--regular)', opacity: 0.7, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100px', margin: '0 auto' }}>
