@@ -95,6 +95,27 @@ type userReservation struct {
 	CPU       int
 	Memory    int
 	Until     int64
+	// IsSystem marks admin-created system bookings for an existing namespace
+	// (e.g. shared model-serving capacity). User booking: namespace "user-<name>",
+	// ClusterQueue named after the namespace. System booking: namespace is the
+	// target namespace itself, ClusterQueue named "system-<namespace>".
+	IsSystem bool
+}
+
+// cqName returns the ClusterQueue name for a reservation.
+func (r userReservation) cqName() string {
+	if r.IsSystem {
+		return "system-" + r.User
+	}
+	return "user-" + sanitizeK8sName(r.User)
+}
+
+// namespace returns the Kubernetes namespace the reservation applies to.
+func (r userReservation) namespace() string {
+	if r.IsSystem {
+		return r.User
+	}
+	return "user-" + sanitizeK8sName(r.User)
 }
 
 func InitReservationSync() {
@@ -138,7 +159,7 @@ func SyncReservations() {
 
 	activeUsers := map[string]bool{}
 	for _, res := range reservations {
-		activeUsers["user-"+sanitizeK8sName(res.User)] = true
+		activeUsers[res.cqName()] = true
 	}
 	if err := removeStaleReservations(activeUsers); err != nil {
 		slog.Error("reservation sync: failed to remove stale", "error", err)
@@ -163,7 +184,7 @@ func getActiveReservationsAt(now time.Time) ([]userReservation, error) {
 	tomorrow := now.AddDate(0, 0, 1).Format("2006-01-02")
 
 	rows, err := db.Query(
-		`SELECT user, resource, slot_index, date, start_hour, end_hour, utc_offset
+		`SELECT user, resource, slot_index, date, start_hour, end_hour, utc_offset, booking_type
 		 FROM bookings WHERE date BETWEEN ? AND ? AND source = ?`,
 		yesterday, tomorrow, database.SourceReserved,
 	)
@@ -172,13 +193,18 @@ func getActiveReservationsAt(now time.Time) ([]userReservation, error) {
 	}
 	defer rows.Close()
 
-	userMap := map[string]map[string]map[int]bool{}
-	userMaxUtcEnd := map[string]time.Time{}
+	type resKey struct {
+		user     string
+		isSystem bool
+	}
+	userMap := map[resKey]map[string]map[int]bool{}
+	userMaxUtcEnd := map[resKey]time.Time{}
 	for rows.Next() {
 		var user, resource, date string
 		var slotIndex, startHour, endHour int
 		var utcOffset float64
-		if err := rows.Scan(&user, &resource, &slotIndex, &date, &startHour, &endHour, &utcOffset); err != nil {
+		var bookingType string
+		if err := rows.Scan(&user, &resource, &slotIndex, &date, &startHour, &endHour, &utcOffset, &bookingType); err != nil {
 			continue
 		}
 		if !database.IsGPUResource(resource) {
@@ -196,16 +222,17 @@ func getActiveReservationsAt(now time.Time) ([]userReservation, error) {
 			continue
 		}
 
-		if _, ok := userMap[user]; !ok {
-			userMap[user] = map[string]map[int]bool{}
+		key := resKey{user: user, isSystem: bookingType == database.BookingTypeSystem}
+		if _, ok := userMap[key]; !ok {
+			userMap[key] = map[string]map[int]bool{}
 		}
-		if _, ok := userMap[user][resource]; !ok {
-			userMap[user][resource] = map[int]bool{}
+		if _, ok := userMap[key][resource]; !ok {
+			userMap[key][resource] = map[int]bool{}
 		}
-		userMap[user][resource][slotIndex] = true
+		userMap[key][resource][slotIndex] = true
 
-		if utcEnd.After(userMaxUtcEnd[user]) {
-			userMaxUtcEnd[user] = utcEnd
+		if utcEnd.After(userMaxUtcEnd[key]) {
+			userMaxUtcEnd[key] = utcEnd
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -213,7 +240,7 @@ func getActiveReservationsAt(now time.Time) ([]userReservation, error) {
 	}
 
 	var reservations []userReservation
-	for user, resourceSlots := range userMap {
+	for key, resourceSlots := range userMap {
 		resources := map[string]int{}
 		cfg := database.GetGPUConfig()
 		for _, spec := range cfg.Resources {
@@ -223,12 +250,13 @@ func getActiveReservationsAt(now time.Time) ([]userReservation, error) {
 			resources[resource] = len(slots)
 		}
 
-		until := userMaxUtcEnd[user]
+		until := userMaxUtcEnd[key]
 
 		res := userReservation{
-			User:      user,
+			User:      key.user,
 			Resources: resources,
 			Until:     until.Unix(),
+			IsSystem:  key.isSystem,
 		}
 		for gpuRes, count := range resources {
 			spec, ok := database.GPUSpecByType(gpuRes)
@@ -269,7 +297,8 @@ func normalizedResourceID(resource string) string {
 }
 
 func applyUserReservation(res userReservation) error {
-	ns := "user-" + sanitizeK8sName(res.User)
+	ns := res.namespace()
+	cqName := res.cqName()
 	untilStr := strconv.FormatInt(res.Until, 10)
 
 	coveredResources := []string{"cpu", "memory"}
@@ -286,14 +315,21 @@ func applyUserReservation(res userReservation) error {
 		})
 	}
 
+	cqLabels := map[string]string{
+		"rhai-tmm.dev/until": untilStr,
+	}
+	// System bookings record their target namespace on the ClusterQueue so the
+	// drain/cleanup paths can find the LocalQueue/HardwareProfiles to remove.
+	if res.IsSystem {
+		cqLabels["rhai-tmm.dev/namespace"] = ns
+	}
+
 	cq := map[string]any{
 		"apiVersion": "kueue.x-k8s.io/v1beta1",
 		"kind":       "ClusterQueue",
 		"metadata": map[string]any{
-			"name": ns,
-			"labels": map[string]string{
-				"rhai-tmm.dev/until": untilStr,
-			},
+			"name":   cqName,
+			"labels": cqLabels,
 		},
 		"spec": map[string]any{
 			"cohort": "unreserved",
@@ -328,8 +364,8 @@ func applyUserReservation(res userReservation) error {
 			},
 		},
 	}
-	if err := k8sApply("/apis/kueue.x-k8s.io/v1beta1/clusterqueues/"+ns, cq); err != nil {
-		return fmt.Errorf("applying ClusterQueue %s: %w", ns, err)
+	if err := k8sApply("/apis/kueue.x-k8s.io/v1beta1/clusterqueues/"+cqName, cq); err != nil {
+		return fmt.Errorf("applying ClusterQueue %s: %w", cqName, err)
 	}
 
 	lq := map[string]any{
@@ -498,6 +534,8 @@ func removeStaleReservations(activeUsers map[string]bool) error {
 			continue
 		}
 
+		ns := namespaceForCQ(item.Name, item.Labels)
+
 		// Already draining — check if ready to finalize
 		if item.Labels["rhai-tmm.dev/draining"] == "true" {
 			finalizeDrainedClusterQueue(item)
@@ -508,11 +546,11 @@ func removeStaleReservations(activeUsers map[string]bool) error {
 		workloads := getClusterQueueWorkloadCount(item.Name)
 		if workloads == 0 {
 			// No workloads — delete immediately
-			deleteUserReservationResources(item.Name)
+			deleteUserReservationResources(item.Name, ns)
 			slog.Info("reservation sync: removed stale reservation", "clusterqueue", item.Name)
 		} else {
 			// Has workloads — initiate graceful drain
-			drainClusterQueue(item.Name)
+			drainClusterQueue(item.Name, ns)
 		}
 	}
 
@@ -570,11 +608,11 @@ func cleanExpiredReservations() error {
 		if until < now {
 			workloads := getClusterQueueWorkloadCount(item.Name)
 			if workloads == 0 {
-				deleteUserReservationResources(item.Name)
+				deleteUserReservationResources(item.Name, namespaceForCQ(item.Name, item.Labels))
 				slog.Info("reservation cleaner: deleted expired reservation", "clusterqueue", item.Name, "until", untilStr)
 				expired++
 			} else {
-				drainClusterQueue(item.Name)
+				drainClusterQueue(item.Name, namespaceForCQ(item.Name, item.Labels))
 				draining++
 			}
 		} else {
@@ -609,9 +647,24 @@ func getClusterQueueWorkloadCount(name string) int {
 	return cq.Status.AdmittedWorkloads + cq.Status.PendingWorkloads + cq.Status.ReservingWorkloads
 }
 
+// namespaceForCQ derives the Kubernetes namespace holding a ClusterQueue's
+// LocalQueue and HardwareProfiles. System bookings label their ClusterQueue
+// with the target namespace; for user bookings the CQ name equals the
+// namespace. Falls back to stripping the "system-" prefix for system CQs
+// missing the label.
+func namespaceForCQ(name string, labels map[string]string) string {
+	if ns, ok := labels["rhai-tmm.dev/namespace"]; ok && ns != "" {
+		return ns
+	}
+	if ns, ok := strings.CutPrefix(name, "system-"); ok {
+		return ns
+	}
+	return name
+}
+
 // drainClusterQueue sets stopPolicy=HoldAndDrain and adds draining labels,
 // then deletes the LocalQueue and HardwareProfiles to prevent new submissions.
-func drainClusterQueue(ns string) {
+func drainClusterQueue(cqName, ns string) {
 	nowStr := strconv.FormatInt(time.Now().UTC().Unix(), 10)
 
 	labels := map[string]string{
@@ -619,7 +672,7 @@ func drainClusterQueue(ns string) {
 		"rhai-tmm.dev/drain-start": nowStr,
 	}
 	// Preserve the until label so cleanExpiredReservations can still find this CQ
-	body, err := K8sGet(fmt.Sprintf("/apis/kueue.x-k8s.io/v1beta1/clusterqueues/%s", ns))
+	body, err := K8sGet(fmt.Sprintf("/apis/kueue.x-k8s.io/v1beta1/clusterqueues/%s", cqName))
 	if err == nil {
 		var existing struct {
 			Metadata struct {
@@ -637,15 +690,15 @@ func drainClusterQueue(ns string) {
 		"apiVersion": "kueue.x-k8s.io/v1beta1",
 		"kind":       "ClusterQueue",
 		"metadata": map[string]any{
-			"name":   ns,
+			"name":   cqName,
 			"labels": labels,
 		},
 		"spec": map[string]any{
 			"stopPolicy": "HoldAndDrain",
 		},
 	}
-	if err := k8sApply("/apis/kueue.x-k8s.io/v1beta1/clusterqueues/"+ns, patch); err != nil {
-		slog.Error("reservation drain: failed to set HoldAndDrain", "clusterqueue", ns, "error", err)
+	if err := k8sApply("/apis/kueue.x-k8s.io/v1beta1/clusterqueues/"+cqName, patch); err != nil {
+		slog.Error("reservation drain: failed to set HoldAndDrain", "clusterqueue", cqName, "error", err)
 		return
 	}
 
@@ -670,7 +723,7 @@ func drainClusterQueue(ns string) {
 		slog.Error("reservation drain: failed to delete LocalQueue", "namespace", ns, "error", err)
 	}
 
-	slog.Info("reservation drain: initiated HoldAndDrain", "clusterqueue", ns)
+	slog.Info("reservation drain: initiated HoldAndDrain", "clusterqueue", cqName)
 }
 
 // finalizeDrainedClusterQueue checks if a draining CQ is ready to delete.
@@ -708,7 +761,7 @@ func finalizeDrainedClusterQueue(item k8sResourceItem) bool {
 	return false
 }
 
-func deleteUserReservationResources(ns string) {
+func deleteUserReservationResources(cqName, ns string) {
 	hpItems, err := k8sListWithLabel(
 		fmt.Sprintf("/apis/infrastructure.opendatahub.io/v1/namespaces/%s/hardwareprofiles", ns),
 		"rhai-tmm.dev/until",
@@ -730,9 +783,9 @@ func deleteUserReservationResources(ns string) {
 	}
 
 	if err := k8sDeletePath(fmt.Sprintf(
-		"/apis/kueue.x-k8s.io/v1beta1/clusterqueues/%s", ns,
+		"/apis/kueue.x-k8s.io/v1beta1/clusterqueues/%s", cqName,
 	)); err != nil {
-		slog.Error("reservation cleanup: failed to delete ClusterQueue", "clusterqueue", ns, "error", err)
+		slog.Error("reservation cleanup: failed to delete ClusterQueue", "clusterqueue", cqName, "error", err)
 	}
 }
 

@@ -20,6 +20,11 @@ export interface Booking {
   startHour: number;
   endHour: number;
   utcOffset: number;
+  bookingType?: string;
+}
+
+export function isSystemBooking(b: Booking): boolean {
+  return b.bookingType === 'system';
 }
 
 export const FALLBACK_GPU_RESOURCES: GPUResource[] = [

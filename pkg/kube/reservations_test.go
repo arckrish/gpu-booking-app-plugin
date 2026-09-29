@@ -17,16 +17,21 @@ func setupTestDB(t *testing.T) {
 	t.Cleanup(database.Close)
 }
 
-func insertBooking(t *testing.T, id, user, resource string, slotIndex int, date string, startHour, endHour int, utcOffset float64) {
+func insertBookingWithType(t *testing.T, bookingType, id, user, resource string, slotIndex int, date string, startHour, endHour int, utcOffset float64) {
 	t.Helper()
 	db := database.DB()
 	_, err := db.Exec(
-		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		id, user, "", resource, slotIndex, date, "full", "now", database.SourceReserved, "", startHour, endHour, utcOffset,
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		id, user, "", resource, slotIndex, date, "full", "now", database.SourceReserved, "", startHour, endHour, utcOffset, bookingType,
 	)
 	if err != nil {
 		t.Fatalf("insertBooking %s: %v", id, err)
 	}
+}
+
+func insertBooking(t *testing.T, id, user, resource string, slotIndex int, date string, startHour, endHour int, utcOffset float64) {
+	t.Helper()
+	insertBookingWithType(t, database.BookingTypeUser, id, user, resource, slotIndex, date, startHour, endHour, utcOffset)
 }
 
 func TestActiveReservations_UTC_FullDay(t *testing.T) {
@@ -254,8 +259,8 @@ func TestActiveReservations_ConsumedBookingsIgnored(t *testing.T) {
 	db := database.DB()
 	// Insert a consumed booking (should be ignored by getActiveReservationsAt)
 	_, err := db.Exec(
-		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-		"c1", "kueue-user", "", "nvidia.com/gpu", 0, "2026-05-04", "full", "now", database.SourceConsumed, "", 0, 24, 0,
+		"INSERT INTO bookings ("+database.BookingColumns+") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+		"c1", "kueue-user", "", "nvidia.com/gpu", 0, "2026-05-04", "full", "now", database.SourceConsumed, "", 0, 24, 0, database.BookingTypeUser,
 	)
 	if err != nil {
 		t.Fatalf("insert consumed: %v", err)
@@ -281,6 +286,119 @@ func TestActiveReservations_Empty(t *testing.T) {
 	}
 	if len(res) != 0 {
 		t.Errorf("expected 0 reservations, got %d", len(res))
+	}
+}
+
+func TestActiveReservations_SystemBooking(t *testing.T) {
+	setupTestDB(t)
+
+	// Admin-created system booking for the prelude-maas namespace.
+	// Active window: May 4 00:00 UTC to May 5 00:00 UTC (utcOffset 0).
+	insertBookingWithType(t, database.BookingTypeSystem, "b1", "prelude-maas", "nvidia.com/gpu", 0, "2026-05-04", 0, 24, 0)
+
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	res, err := getActiveReservationsAt(now)
+	if err != nil {
+		t.Fatalf("getActiveReservationsAt: %v", err)
+	}
+	if len(res) != 1 {
+		t.Fatalf("expected 1 reservation, got %d", len(res))
+	}
+	if res[0].User != "prelude-maas" {
+		t.Errorf("user = %q, want prelude-maas (target namespace)", res[0].User)
+	}
+	if !res[0].IsSystem {
+		t.Error("IsSystem = false, want true")
+	}
+	if res[0].Resources["nvidia.com/gpu"] != 1 {
+		t.Errorf("gpu count = %d, want 1", res[0].Resources["nvidia.com/gpu"])
+	}
+}
+
+func TestActiveReservations_UserAndSystemSeparate(t *testing.T) {
+	setupTestDB(t)
+
+	// User booking and system booking must produce separate reservations,
+	// never merged (grouping is by booking type + user).
+	insertBooking(t, "b1", "alice", "nvidia.com/gpu", 0, "2026-05-04", 0, 24, 0)
+	insertBookingWithType(t, database.BookingTypeSystem, "b2", "prelude-maas", "nvidia.com/gpu", 1, "2026-05-04", 0, 24, 0)
+
+	now := time.Date(2026, 5, 4, 12, 0, 0, 0, time.UTC)
+	res, err := getActiveReservationsAt(now)
+	if err != nil {
+		t.Fatalf("getActiveReservationsAt: %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("expected 2 reservations (user + system), got %d", len(res))
+	}
+
+	found := map[string]userReservation{}
+	for _, r := range res {
+		found[r.User] = r
+	}
+	alice, ok := found["alice"]
+	if !ok || alice.IsSystem {
+		t.Errorf("expected alice user reservation (IsSystem=false), got %+v", alice)
+	}
+	sys, ok := found["prelude-maas"]
+	if !ok || !sys.IsSystem {
+		t.Errorf("expected prelude-maas system reservation (IsSystem=true), got %+v", sys)
+	}
+}
+
+func TestCQNaming(t *testing.T) {
+	userRes := userReservation{User: "alice"}
+	if got := userRes.cqName(); got != "user-alice" {
+		t.Errorf("cqName() = %q, want user-alice", got)
+	}
+	if got := userRes.namespace(); got != "user-alice" {
+		t.Errorf("namespace() = %q, want user-alice", got)
+	}
+
+	// Usernames with @domain sanitize to the short name
+	emailRes := userReservation{User: "cluster-admin@redhat.com"}
+	if got := emailRes.cqName(); got != "user-cluster-admin" {
+		t.Errorf("cqName() = %q, want user-cluster-admin", got)
+	}
+
+	sysRes := userReservation{User: "prelude-maas", IsSystem: true}
+	if got := sysRes.cqName(); got != "system-prelude-maas" {
+		t.Errorf("cqName() = %q, want system-prelude-maas", got)
+	}
+	if got := sysRes.namespace(); got != "prelude-maas" {
+		t.Errorf("namespace() = %q, want prelude-maas (target namespace, not a user- ns)", got)
+	}
+}
+
+func TestNamespaceForCQ(t *testing.T) {
+	// User CQ: name equals namespace
+	if got := namespaceForCQ("user-alice", nil); got != "user-alice" {
+		t.Errorf("namespaceForCQ(user CQ) = %q, want user-alice", got)
+	}
+
+	// System CQ: namespace from the rhai-tmm.dev/namespace label
+	if got := namespaceForCQ("system-prelude-maas", map[string]string{"rhai-tmm.dev/namespace": "prelude-maas"}); got != "prelude-maas" {
+		t.Errorf("namespaceForCQ(system CQ, label) = %q, want prelude-maas", got)
+	}
+
+	// System CQ without label: falls back to prefix strip
+	if got := namespaceForCQ("system-prelude-maas", nil); got != "prelude-maas" {
+		t.Errorf("namespaceForCQ(system CQ, no label) = %q, want prelude-maas", got)
+	}
+}
+
+func TestSanitizeK8sName(t *testing.T) {
+	cases := map[string]string{
+		"cluster-admin@redhat.com": "cluster-admin",
+		"alice":                    "alice",
+		"User@EXAMPLE.com":         "user",
+		"a_b":                      "a-b",
+		"-weird-":                  "weird",
+	}
+	for in, want := range cases {
+		if got := sanitizeK8sName(in); got != want {
+			t.Errorf("sanitizeK8sName(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

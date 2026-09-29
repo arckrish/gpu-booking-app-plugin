@@ -62,6 +62,7 @@ export interface BookingRequest {
   startHour?: number;
   endHour?: number;
   utcOffset?: number;
+  targetNamespace?: string;
 }
 
 export const createBooking = (data: BookingRequest) =>
@@ -75,6 +76,7 @@ export interface BulkBookingRequest {
   startHour: number;
   endHour: number;
   utcOffset: number;
+  targetNamespace?: string;
 }
 
 export interface BulkBookingResponse {

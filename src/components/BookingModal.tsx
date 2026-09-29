@@ -13,9 +13,12 @@ import {
   NumberInput,
   FormSelect,
   FormSelectOption,
+  Radio,
+  TextInput,
   Split,
   SplitItem,
 } from '@patternfly/react-core';
+import { useAuth } from '../utils/AuthContext';
 import {
   Booking,
   GPUResource,
@@ -40,6 +43,7 @@ interface BookingModalProps {
     startHour: number,
     endHour: number,
     utcOffset: number,
+    targetNamespace: string,
   ) => Promise<void>;
 }
 
@@ -53,6 +57,7 @@ const BookingModal: React.FC<BookingModalProps> = ({
   onClose,
   onSubmit,
 }) => {
+  const { isAdmin, username } = useAuth();
   const [resources, setResources] = React.useState<Record<string, number>>(
     editBooking ? { [editBooking.resource]: 1 } : {},
   );
@@ -65,8 +70,12 @@ const BookingModal: React.FC<BookingModalProps> = ({
     editBooking ? editBooking.endHour : 24,
   );
   const [description, setDescription] = React.useState(editBooking?.description || '');
+  const [bookAsSystem, setBookAsSystem] = React.useState(false);
+  const [targetNamespace, setTargetNamespace] = React.useState('');
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  const namespaceInvalid = bookAsSystem && targetNamespace.trim() === '';
 
   const utcOffset = getUtcOffsetHours(start);
 
@@ -118,10 +127,20 @@ const BookingModal: React.FC<BookingModalProps> = ({
 
   const handleSubmit = async () => {
     if (totalResources === 0) return;
+    if (namespaceInvalid) return;
     setSubmitting(true);
     setError(null);
     try {
-      await onSubmit(resources, start, end, description, startHourLocal, endHourLocal, utcOffset);
+      await onSubmit(
+        resources,
+        start,
+        end,
+        description,
+        startHourLocal,
+        endHourLocal,
+        utcOffset,
+        bookAsSystem ? targetNamespace.trim() : undefined,
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to create bookings');
       setSubmitting(false);
@@ -194,6 +213,36 @@ const BookingModal: React.FC<BookingModalProps> = ({
               </div>
             )}
           </FormGroup>
+
+          {isAdmin && !editBooking && (
+            <FormGroup label="Book as" fieldId="book-as">
+              <Radio
+                id="book-as-self"
+                name="book-as"
+                label={`Myself${username ? ` (${username})` : ''}`}
+                isChecked={!bookAsSystem}
+                onChange={() => setBookAsSystem(false)}
+              />
+              <Radio
+                id="book-as-system"
+                name="book-as"
+                label="System namespace"
+                description="Reserve capacity for a namespace that has no logged-in user (e.g. model serving). Admin only."
+                isChecked={bookAsSystem}
+                onChange={() => setBookAsSystem(true)}
+              />
+              {bookAsSystem && (
+                <TextInput
+                  id="target-namespace"
+                  value={targetNamespace}
+                  onChange={(_e, val) => setTargetNamespace(val)}
+                  placeholder="e.g. prelude-maas"
+                  aria-label="Target namespace"
+                  style={{ marginTop: '8px', maxWidth: '320px' }}
+                />
+              )}
+            </FormGroup>
+          )}
 
           <FormGroup label="Resources" fieldId="resources">
             {gpuResources.map((r) => {
@@ -278,10 +327,14 @@ const BookingModal: React.FC<BookingModalProps> = ({
         <Button
           variant="primary"
           onClick={handleSubmit}
-          isDisabled={submitting || totalResources === 0}
+          isDisabled={submitting || totalResources === 0 || namespaceInvalid}
           isLoading={submitting}
         >
-          {editBooking ? 'Save Changes' : `Book ${totalResources} resource${totalResources !== 1 ? 's' : ''}`}
+          {editBooking
+            ? 'Save Changes'
+            : bookAsSystem && targetNamespace.trim()
+              ? `Book ${totalResources} resource${totalResources !== 1 ? 's' : ''} for ${targetNamespace.trim()}`
+              : `Book ${totalResources} resource${totalResources !== 1 ? 's' : ''}`}
         </Button>
         <Button variant="link" onClick={onClose}>
           Cancel

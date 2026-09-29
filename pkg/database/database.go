@@ -26,6 +26,7 @@ type Booking struct {
 	StartHour   int    `json:"startHour"`
 	EndHour     int    `json:"endHour"`
 	UtcOffset   float64 `json:"utcOffset"`
+	BookingType string  `json:"booking_type"`
 }
 
 type GPUResourceSpec struct {
@@ -77,6 +78,13 @@ const (
 
 	// Slot types
 	SlotTypeFull = "full"
+
+	// Booking types: "user" = booked by a logged-in user, "system" = admin-created
+	// booking for a namespace (e.g. shared model-serving capacity). For system
+	// bookings the `user` column holds the target namespace and `email` holds
+	// the creating admin's username.
+	BookingTypeUser   = "user"
+	BookingTypeSystem = "system"
 )
 
 type Config struct {
@@ -148,6 +156,7 @@ func OpenDB(dbPath string) error {
 			start_hour INTEGER NOT NULL DEFAULT 0,
 			end_hour INTEGER NOT NULL DEFAULT 24,
 			utc_offset REAL NOT NULL DEFAULT 0,
+			booking_type TEXT NOT NULL DEFAULT 'user',
 			UNIQUE(resource, slot_index, date, slot_type)
 		)
 	`)
@@ -166,6 +175,7 @@ func OpenDB(dbPath string) error {
 	db.Exec("ALTER TABLE bookings ADD COLUMN start_hour INTEGER NOT NULL DEFAULT 0")
 	db.Exec("ALTER TABLE bookings ADD COLUMN end_hour INTEGER NOT NULL DEFAULT 24")
 	db.Exec("ALTER TABLE bookings ADD COLUMN utc_offset REAL NOT NULL DEFAULT 0")
+	db.Exec("ALTER TABLE bookings ADD COLUMN booking_type TEXT NOT NULL DEFAULT 'user'")
 
 	return nil
 }
@@ -223,8 +233,8 @@ func LoadConfigFromFile(path string) error {
 
 func ScanBooking(rows *sql.Rows) (Booking, error) {
 	var b Booking
-	err := rows.Scan(&b.ID, &b.User, &b.Email, &b.Resource, &b.SlotIndex, &b.Date, &b.SlotType, &b.CreatedAt, &b.Source, &b.Description, &b.StartHour, &b.EndHour, &b.UtcOffset)
+	err := rows.Scan(&b.ID, &b.User, &b.Email, &b.Resource, &b.SlotIndex, &b.Date, &b.SlotType, &b.CreatedAt, &b.Source, &b.Description, &b.StartHour, &b.EndHour, &b.UtcOffset, &b.BookingType)
 	return b, err
 }
 
-const BookingColumns = "id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour, utc_offset"
+const BookingColumns = "id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour, utc_offset, booking_type"

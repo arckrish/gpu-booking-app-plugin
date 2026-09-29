@@ -158,6 +158,18 @@ The default image is `quay.io/eformat/gpu-booking-plugin:latest`. Override with:
 make podman-push REGISTRY=my-registry.example.com REPOSITORY=my-registry.example.com/my-org/gpu-booking-plugin
 ```
 
+Build and push a custom tag (e.g. `:system` for testing an unreleased change independently of `:latest`):
+
+```bash
+make podman-push TAG=system
+```
+
+Then deploy the test image with:
+
+```bash
+helm upgrade gpu-booking-plugin chart/ -n gpu-booking-app-plugin --set image.tag=system
+```
+
 ### Deploy with Helm
 
 ```bash

@@ -81,7 +81,7 @@ The main table lists all bookings with sortable columns:
 | Column | Description |
 |--------|-------------|
 | **ID** | Unique booking identifier (deterministic for Kueue bookings, random for user bookings) |
-| **User** | The booking owner (OpenShift username or namespace name for Kueue bookings) |
+| **User** | The booking owner (OpenShift username, Kueue namespace, or target namespace for admin-created system bookings) |
 | **Resource** | GPU resource type (e.g. `nvidia.com/gpu`, `nvidia.com/mig-*`) |
 | **Slot** | Slot index (0-based) |
 | **Date** | Booking date (YYYY-MM-DD) |
@@ -92,6 +92,16 @@ The main table lists all bookings with sortable columns:
 Click any sortable column header to sort ascending; click again to reverse.
 
 ![images/admin-bookings-table.png](images/admin-bookings-table.png)
+
+---
+
+## System Bookings
+
+Administrators can create **system bookings** from the booking dialog on the Bookings page -- reservations for a namespace that has no logged-in user (e.g. `prelude-maas` for shared MaaS model-serving capacity). See [Making Bookings](making-bookings) for creation details.
+
+In the bookings table, system bookings show the **target namespace** in the User column with a blue **system** badge. The creating admin is recorded in the audit log and in the booking's email field.
+
+To delete a system booking, use the table's **Delete** button like any other booking. System bookings are not shown under **My Bookings** -- use the table's text filter with the namespace name to find them quickly.
 
 ---
 

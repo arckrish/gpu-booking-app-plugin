@@ -134,9 +134,9 @@ The console's `UserToken` proxy forwards the logged-in user's Bearer token to th
 GET    /api/auth/me                  → current user info (username, groups, is_admin)
 GET    /api/config                   → GPU specs, booking window, cluster capacity
 GET    /api/bookings                 → all bookings + active reservations + current user
-POST   /api/bookings                 → create single booking (conflict resolution)
+POST   /api/bookings                 → create single booking (conflict resolution, admin may pass targetNamespace for system bookings)
 DELETE /api/bookings?id=             → cancel booking (owner or admin only)
-POST   /api/bookings/bulk            → create multi-day bookings (date range + resource counts)
+POST   /api/bookings/bulk            → create multi-day bookings (date range + resource counts, admin targetNamespace supported)
 GET    /api/workloads/preempted      → list Kueue workloads with Preempted/Evicted conditions
 GET    /api/admin                    → all bookings (admin only)
 DELETE /api/admin?id=                → delete booking (admin only)
@@ -189,6 +189,15 @@ When a user has an active reservation, three Kubernetes resources are created:
 2. **LocalQueue** (`reserved`) - lives in the `user-<username>` namespace and points to the user's ClusterQueue. This is the queue users submit workloads to.
 
 3. **HardwareProfile(s)** - one per GPU resource type reserved (e.g. `reserved-gpu`, `reserved-mig-35gb`). Lives in the user's namespace and references the `reserved` LocalQueue. Uses API group `infrastructure.opendatahub.io`. Provides the scheduling interface for OpenDataHub/RHOAI workbenches.
+
+### System Bookings
+
+Administrators can create **system bookings** for a namespace that has no logged-in user (e.g. `shared-maas` for shared MaaS model-serving capacity). System bookings are created via `POST /api/bookings` or `/api/bookings/bulk` with a `targetNamespace` field, which is only honored for users with the booking admin permission. The target namespace must exist in the cluster (verified at booking time).
+
+- Bookings are stored with `booking_type = 'system'`; the `user` column holds the target namespace and the `email` column holds the creating admin's username.
+- **ClusterQueue** (`system-<namespace>`) - scoped to the existing target namespace via its namespaceSelector, labeled `rhai-tmm.dev/namespace` so cleanup can locate the namespace-scoped resources.
+- **LocalQueue** (`reserved`) and **HardwareProfile(s)** are created inside the target namespace.
+- System reservations follow the same conflict rules (they block user reservations, evict consumed slots), share the same Cohort accounting, and expire/drain through the same `until` label mechanism.
 
 ### Quota Flow
 
@@ -243,8 +252,12 @@ The system tracks two types of bookings that interact through a priority-based c
 
 1. **Empty slot** - booking proceeds normally
 2. **Slot occupied by `consumed`** - consumed booking is evicted, reserved booking takes its place. This reduces the unreserved Cohort and triggers Kueue workload preemption.
-3. **Slot occupied by `reserved`** - returns `409 Conflict` (`slot_taken`)
+3. **Slot occupied by `reserved`** - returns `409 Conflict` (`slot_taken`), regardless of whether the existing booking is a user or system booking
 4. **Database uniqueness** - `UNIQUE(resource, slot_index, date, slot_type)` constraint prevents exact duplicates
+
+### Booking Types
+
+Every booking has a `booking_type`: `user` (created by a logged-in user for themselves) or `system` (created by an admin for a namespace). Both types use `source = "reserved"` and follow identical conflict, preemption, and expiry semantics — the type only controls how the reservation sync names the ClusterQueue (`user-<name>` vs `system-<namespace>`) and which namespace the LocalQueue/HardwareProfiles are created in.
 
 ## Sync Lifecycle
 
@@ -407,16 +420,18 @@ Test files:
 
 | File | Covers |
 |------|--------|
-| `pkg/api/validate_test.go` | Booking ID and date validation |
+| `pkg/api/validate_test.go` | Booking ID, date, and namespace name validation |
 | `pkg/api/helpers_test.go` | JSON response helpers |
 | `pkg/api/bookings_test.go` | Booking CRUD, conflict resolution, bulk operations, consumed eviction |
+| `pkg/api/system_bookings_test.go` | System booking creation, admin gating, namespace validation, conflicts, activeReservations mapping |
 | `pkg/api/admin_test.go` | Admin list/delete/toggle, pagination, filters, DB export/import |
 | `pkg/api/auth_test.go` | User context extraction, MeHandler, AuthMiddleware (DevMode, cache, health bypass) |
 | `pkg/api/config_test.go` | Config endpoint |
 | `pkg/api/ratelimit_test.go` | Per-IP rate limiting and burst behavior |
 | `pkg/database/database_test.go` | Init, schema, CRUD, unique constraints, config loading |
+| `pkg/kube/reservations_test.go` | Active reservation grouping (user/system/UTC offsets), CQ naming, namespace derivation |
 
-**Note:** `pkg/kube/` is not unit-tested as it requires a live Kubernetes cluster with Kueue installed.
+**Note:** `pkg/kube/` sync functions that require the Kueue API are not unit-tested; `getActiveReservationsAt`, CQ naming, and namespace derivation are tested against temporary SQLite databases.
 
 ### Frontend (TypeScript)
 
@@ -426,8 +441,8 @@ Test files:
 
 | File | Covers |
 |------|--------|
-| `src/utils/constants.test.ts` | Date formatting, weekend detection, month/date range utilities, GPU equivalent calculations |
-| `src/utils/api.test.ts` | All API client functions with mocked `fetch`, CSRF token handling, error responses |
+| `src/utils/constants.test.ts` | Date formatting, weekend detection, month/date range utilities, GPU equivalent calculations, system booking detection |
+| `src/utils/api.test.ts` | All API client functions with mocked `fetch`, CSRF token handling, error responses, system booking targetNamespace |
 | `src/utils/hooks.test.ts` | `useBookings`, `useConfig`, `usePreemptedWorkloads`, `useClock` — mount, polling, cleanup, error handling |
 
 ## Key Files

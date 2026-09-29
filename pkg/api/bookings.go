@@ -12,6 +12,33 @@ import (
 	"github.com/eformat/gpu-booking-plugin/pkg/kube"
 )
 
+// namespaceExistsFn verifies a namespace exists in the cluster for system
+// bookings. Skips verification when no Kubernetes client is configured
+// (local development). Overridden in tests to simulate cluster lookups.
+var namespaceExistsFn = func(ns string) (bool, error) {
+	if !kube.K8sAvailable() {
+		return true, nil
+	}
+	return kube.NamespaceExists(ns)
+}
+
+// validateSystemBookingTarget validates a system booking target namespace.
+// Returns an error message key and HTTP status on failure, or "" on success.
+func validateSystemBookingTarget(target string) (string, int) {
+	if !IsValidK8sName(target) {
+		return "invalid_namespace", http.StatusBadRequest
+	}
+	exists, err := namespaceExistsFn(target)
+	if err != nil {
+		slog.Error("namespace check failed", "namespace", target, "error", err)
+		return "namespace_check_failed", http.StatusInternalServerError
+	}
+	if !exists {
+		return "namespace_not_found", http.StatusBadRequest
+	}
+	return "", 0
+}
+
 func GetBookings(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user := GetUser(r)
@@ -57,7 +84,11 @@ func GetBookings(w http.ResponseWriter, r *http.Request) {
 		utcEnd := base.Add(time.Duration((float64(b.EndHour) - b.UtcOffset) * float64(time.Hour)))
 		if !now.Before(utcStart) && now.Before(utcEnd) {
 			if _, ok := activeRes[b.User]; !ok {
-				activeRes[b.User] = "user-" + b.User
+				if b.BookingType == database.BookingTypeSystem {
+					activeRes[b.User] = "system-" + b.User
+				} else {
+					activeRes[b.User] = "user-" + b.User
+				}
 			}
 		}
 	}
@@ -75,18 +106,38 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 	db := database.DB()
 
 	var req struct {
-		Resource    string `json:"resource"`
-		SlotIndex   int    `json:"slotIndex"`
-		Date        string `json:"date"`
-		SlotType    string `json:"slotType"`
-		Description string `json:"description"`
-		StartHour   int     `json:"startHour"`
-		EndHour     int     `json:"endHour"`
-		UtcOffset   float64 `json:"utcOffset"`
+		Resource       string  `json:"resource"`
+		SlotIndex      int     `json:"slotIndex"`
+		Date           string  `json:"date"`
+		SlotType       string  `json:"slotType"`
+		Description    string  `json:"description"`
+		StartHour      int     `json:"startHour"`
+		EndHour        int     `json:"endHour"`
+		UtcOffset      float64 `json:"utcOffset"`
+		TargetNamespace string `json:"targetNamespace"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		HttpError(w, http.StatusBadRequest, "invalid_request")
 		return
+	}
+
+	// System booking: admin creating a reservation for a namespace (e.g. shared
+	// model-serving capacity) rather than for themselves. Only honored for admins.
+	bookingType := database.BookingTypeUser
+	bookingOwner := user.Username
+	createdBy := ""
+	if req.TargetNamespace != "" {
+		if !user.IsAdmin {
+			HttpError(w, http.StatusForbidden, "admin_required")
+			return
+		}
+		if key, status := validateSystemBookingTarget(req.TargetNamespace); key != "" {
+			HttpError(w, status, key)
+			return
+		}
+		bookingType = database.BookingTypeSystem
+		bookingOwner = req.TargetNamespace
+		createdBy = user.Username
 	}
 
 	if req.SlotType != database.SlotTypeFull {
@@ -177,8 +228,8 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err = db.ExecContext(ctx,
-		"INSERT INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour, utc_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		id, user.Username, "", req.Resource, req.SlotIndex, req.Date, req.SlotType, createdAt, database.SourceReserved, desc, startHour, endHour, utcOffset,
+		"INSERT INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour, utc_offset, booking_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		id, bookingOwner, createdBy, req.Resource, req.SlotIndex, req.Date, req.SlotType, createdAt, database.SourceReserved, desc, startHour, endHour, utcOffset, bookingType,
 	)
 	if err != nil {
 		JsonResponseStatus(w, http.StatusConflict, map[string]string{"error": "slot_taken"})
@@ -187,7 +238,8 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 
 	booking := database.Booking{
 		ID:          id,
-		User:        user.Username,
+		User:        bookingOwner,
+		Email:       createdBy,
 		Resource:    req.Resource,
 		SlotIndex:   req.SlotIndex,
 		Date:        req.Date,
@@ -198,9 +250,10 @@ func CreateBooking(w http.ResponseWriter, r *http.Request) {
 		StartHour:   startHour,
 		EndHour:     endHour,
 		UtcOffset:   utcOffset,
+		BookingType: bookingType,
 	}
 
-	slog.Info("AUDIT: booking created", "user", user.Username, "bookingId", id, "resource", req.Resource, "slot", req.SlotIndex, "date", req.Date, "remote_addr", r.RemoteAddr)
+	slog.Info("AUDIT: booking created", "user", user.Username, "bookingId", id, "resource", req.Resource, "slot", req.SlotIndex, "date", req.Date, "bookingType", bookingType, "remote_addr", r.RemoteAddr)
 	JsonResponseStatus(w, http.StatusCreated, booking)
 	kube.TriggerSyncReservations()
 }
@@ -333,17 +386,37 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 	db := database.DB()
 
 	var req struct {
-		Resources   map[string]int `json:"resources"`
-		StartDate   string         `json:"startDate"`
-		EndDate     string         `json:"endDate"`
-		Description string         `json:"description"`
-		StartHour   int            `json:"startHour"`
-		EndHour     int            `json:"endHour"`
-		UtcOffset   float64        `json:"utcOffset"`
+		Resources       map[string]int `json:"resources"`
+		StartDate       string         `json:"startDate"`
+		EndDate         string         `json:"endDate"`
+		Description     string         `json:"description"`
+		StartHour       int            `json:"startHour"`
+		EndHour         int            `json:"endHour"`
+		UtcOffset       float64        `json:"utcOffset"`
+		TargetNamespace string         `json:"targetNamespace"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		HttpError(w, http.StatusBadRequest, "invalid_request")
 		return
+	}
+
+	// System booking: admin creating a reservation for a namespace rather than
+	// for themselves. Only honored for admins.
+	bookingType := database.BookingTypeUser
+	bookingOwner := user.Username
+	createdBy := ""
+	if req.TargetNamespace != "" {
+		if !user.IsAdmin {
+			HttpError(w, http.StatusForbidden, "admin_required")
+			return
+		}
+		if key, status := validateSystemBookingTarget(req.TargetNamespace); key != "" {
+			HttpError(w, status, key)
+			return
+		}
+		bookingType = database.BookingTypeSystem
+		bookingOwner = req.TargetNamespace
+		createdBy = user.Username
 	}
 
 	if req.StartDate == "" || req.EndDate == "" || len(req.Resources) == 0 {
@@ -524,8 +597,8 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 				createdAt := time.Now().UTC().Format(time.RFC3339)
 
 				_, err := tx.ExecContext(ctx,
-					"INSERT INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour, utc_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-					id, user.Username, "", resource, unitIdx, date, database.SlotTypeFull, createdAt, database.SourceReserved, desc, startHour, endHour, utcOffset,
+					"INSERT INTO bookings (id, user, email, resource, slot_index, date, slot_type, created_at, source, description, start_hour, end_hour, utc_offset, booking_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+					id, bookingOwner, createdBy, resource, unitIdx, date, database.SlotTypeFull, createdAt, database.SourceReserved, desc, startHour, endHour, utcOffset, bookingType,
 				)
 				if err != nil {
 					slog.Error("bulk booking: insert failed", "resource", resource, "slot", unitIdx, "date", date, "error", err)
@@ -534,7 +607,8 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 
 				created = append(created, database.Booking{
 					ID:          id,
-					User:        user.Username,
+					User:        bookingOwner,
+					Email:       createdBy,
 					Resource:    resource,
 					SlotIndex:   unitIdx,
 					Date:        date,
@@ -545,6 +619,7 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 					StartHour:   startHour,
 					EndHour:     endHour,
 					UtcOffset:   utcOffset,
+					BookingType: bookingType,
 				})
 				booked++
 			}
@@ -566,7 +641,7 @@ func BulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("AUDIT: bulk booking created", "user", user.Username, "created_count", len(created), "error_count", len(errors), "start_date", req.StartDate, "end_date", req.EndDate, "remote_addr", r.RemoteAddr)
+	slog.Info("AUDIT: bulk booking created", "user", user.Username, "created_count", len(created), "error_count", len(errors), "start_date", req.StartDate, "end_date", req.EndDate, "bookingType", bookingType, "remote_addr", r.RemoteAddr)
 
 	JsonResponseStatus(w, http.StatusCreated, map[string]any{
 		"bookings": created,

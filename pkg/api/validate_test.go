@@ -1,6 +1,7 @@
 package api
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,6 +39,39 @@ func TestIsValidBookingID(t *testing.T) {
 	long := "booking-" + string(make([]byte, 300))
 	if IsValidBookingID(long) {
 		t.Error("expected rejection for ID exceeding 256 chars")
+	}
+}
+
+func TestIsValidK8sName(t *testing.T) {
+	valid := []string{
+		"prelude-maas",
+		"a",
+		"1",
+		"a1-b2-c3",
+		"my-ns-123",
+		strings.Repeat("a", 63), // max length
+	}
+	for _, name := range valid {
+		if !IsValidK8sName(name) {
+			t.Errorf("expected valid: %q", name)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"-lead",
+		"trail-",
+		"UPPER",
+		"a_b",
+		"a.b",
+		"prelude maas",
+		"prelude@maas",
+		strings.Repeat("a", 64), // exceeds DNS label limit
+	}
+	for _, name := range invalid {
+		if IsValidK8sName(name) {
+			t.Errorf("expected invalid: %q", name)
+		}
 	}
 }
 

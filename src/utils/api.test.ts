@@ -105,6 +105,37 @@ describe('createBooking', () => {
     expect(opts.method).toBe('POST');
     expect(JSON.parse(opts.body)).toMatchObject({ resource: 'nvidia.com/gpu' });
   });
+
+  it('omits targetNamespace when not provided', async () => {
+    const booking = { id: 'booking-1', user: 'alice', resource: 'nvidia.com/gpu' };
+    mockFetch.mockReturnValue(jsonResponse(booking));
+
+    await createBooking({
+      resource: 'nvidia.com/gpu',
+      slotIndex: 0,
+      date: '2025-04-25',
+      slotType: 'full',
+    });
+
+    const [, opts] = mockFetch.mock.calls[0];
+    expect('targetNamespace' in JSON.parse(opts.body)).toBe(false);
+  });
+
+  it('sends targetNamespace for system bookings', async () => {
+    const booking = { id: 'booking-1', user: 'prelude-maas', resource: 'nvidia.com/gpu' };
+    mockFetch.mockReturnValue(jsonResponse(booking));
+
+    await createBooking({
+      resource: 'nvidia.com/gpu',
+      slotIndex: 0,
+      date: '2025-04-25',
+      slotType: 'full',
+      targetNamespace: 'prelude-maas',
+    });
+
+    const [, opts] = mockFetch.mock.calls[0];
+    expect(JSON.parse(opts.body)).toMatchObject({ targetNamespace: 'prelude-maas' });
+  });
 });
 
 describe('createBulkBooking', () => {
@@ -126,6 +157,25 @@ describe('createBulkBooking', () => {
     const [url, opts] = mockFetch.mock.calls[0];
     expect(url).toBe(`${PROXY_BASE}/bookings/bulk`);
     expect(opts.method).toBe('POST');
+  });
+
+  it('sends targetNamespace for system bookings', async () => {
+    const data = { bookings: [], errors: [] };
+    mockFetch.mockReturnValue(jsonResponse(data));
+
+    await createBulkBooking({
+      resources: { 'nvidia.com/gpu': 2 },
+      startDate: '2025-04-25',
+      endDate: '2025-04-26',
+      description: 'maas',
+      startHour: 0,
+      endHour: 24,
+      utcOffset: 0,
+      targetNamespace: 'prelude-maas',
+    });
+
+    const [, opts] = mockFetch.mock.calls[0];
+    expect(JSON.parse(opts.body)).toMatchObject({ targetNamespace: 'prelude-maas' });
   });
 });
 

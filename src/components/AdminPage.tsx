@@ -47,7 +47,7 @@ import {
   adminTriggerDiscovery,
   AdminResponse,
 } from '../utils/api';
-import { GPUResource, FALLBACK_GPU_RESOURCES, todayStr } from '../utils/constants';
+import { GPUResource, FALLBACK_GPU_RESOURCES, todayStr, isSystemBooking } from '../utils/constants';
 import ResourceSelector from './ResourceSelector';
 
 type SortKey = 'id' | 'user' | 'resource' | 'slotIndex' | 'date' | 'source' | 'createdAt';
@@ -381,7 +381,14 @@ const AdminPage: React.FC = () => {
                   <Td style={{ fontSize: '12px', maxWidth: '150px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {b.id}
                   </Td>
-                  <Td>{b.user}</Td>
+                  <Td>
+                    {b.user}
+                    {isSystemBooking(b) && (
+                      <Label color="blue" isCompact style={{ marginLeft: '6px' }}>
+                        system
+                      </Label>
+                    )}
+                  </Td>
                   <Td style={{ fontSize: '12px' }}>{b.resource}</Td>
                   <Td>{b.slotIndex}</Td>
                   <Td>{b.date}</Td>
