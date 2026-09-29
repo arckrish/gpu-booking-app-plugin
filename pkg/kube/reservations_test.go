@@ -1,7 +1,12 @@
 package kube
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -445,5 +450,77 @@ func TestActiveReservations_IST_HalfHourOffset(t *testing.T) {
 	if res[0].Until != expectedUntil {
 		t.Errorf("until = %d (%s), want %d (May 4 18:30 UTC)",
 			res[0].Until, time.Unix(res[0].Until, 0).UTC(), expectedUntil)
+	}
+}
+
+func TestApplyUserReservation_SystemLQClusterQueue(t *testing.T) {
+	var mu sync.Mutex
+	lqBodies := map[string]map[string]any{}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var manifest map[string]any
+		json.Unmarshal(body, &manifest)
+
+		if manifest["kind"] == "LocalQueue" {
+			mu.Lock()
+			lqBodies[r.URL.Path] = manifest
+			mu.Unlock()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"metadata":{}}`))
+	}))
+	defer ts.Close()
+
+	origHost, origToken, origClient := k8sHost, k8sToken, k8sHTTPClient
+	k8sHost = ts.URL
+	k8sToken = "test-token"
+	k8sHTTPClient = ts.Client()
+	defer func() { k8sHost, k8sToken, k8sHTTPClient = origHost, origToken, origClient }()
+
+	// System booking: namespace=prelude-maas, CQ=system-prelude-maas
+	sysRes := userReservation{
+		User:      "prelude-maas",
+		IsSystem:  true,
+		Resources: map[string]int{"nvidia.com/gpu": 1},
+		CPU:       2,
+		Memory:    8,
+		Until:     time.Now().Add(time.Hour).Unix(),
+	}
+	if err := applyUserReservation(sysRes); err != nil {
+		t.Fatalf("applyUserReservation (system): %v", err)
+	}
+
+	lqPath := "/apis/kueue.x-k8s.io/v1beta1/namespaces/prelude-maas/localqueues/reserved"
+	lq, ok := lqBodies[lqPath]
+	if !ok {
+		t.Fatalf("no LocalQueue PATCH to %s", lqPath)
+	}
+	spec := lq["spec"].(map[string]any)
+	if got := spec["clusterQueue"]; got != "system-prelude-maas" {
+		t.Errorf("system LQ clusterQueue = %q, want system-prelude-maas", got)
+	}
+
+	// User booking: namespace=user-alice, CQ=user-alice (both match)
+	lqBodies = map[string]map[string]any{}
+	userRes := userReservation{
+		User:      "alice",
+		Resources: map[string]int{"nvidia.com/gpu": 1},
+		CPU:       2,
+		Memory:    8,
+		Until:     time.Now().Add(time.Hour).Unix(),
+	}
+	if err := applyUserReservation(userRes); err != nil {
+		t.Fatalf("applyUserReservation (user): %v", err)
+	}
+
+	lqPath = "/apis/kueue.x-k8s.io/v1beta1/namespaces/user-alice/localqueues/reserved"
+	lq, ok = lqBodies[lqPath]
+	if !ok {
+		t.Fatalf("no LocalQueue PATCH to %s", lqPath)
+	}
+	spec = lq["spec"].(map[string]any)
+	if got := spec["clusterQueue"]; got != "user-alice" {
+		t.Errorf("user LQ clusterQueue = %q, want user-alice", got)
 	}
 }
