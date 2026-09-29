@@ -383,7 +383,7 @@ func applyUserReservation(res userReservation) error {
 			},
 		},
 		"spec": map[string]any{
-			"clusterQueue": ns,
+			"clusterQueue": cqName,
 		},
 	}
 	if err := k8sApply(fmt.Sprintf("/apis/kueue.x-k8s.io/v1beta1/namespaces/%s/localqueues/reserved", ns), lq); err != nil {
